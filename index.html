@@ -1,18 +1,18 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Stickman Parkour</title>
+    <title>Orange Stickman Parkour</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #002b36; }
-        #lava { position: fixed; bottom: 0; width: 100%; height: 30px; background: linear-gradient(transparent, red); }
+        body { margin: 0; overflow: hidden; background: #ff8c00; } /* Orange Background */
+        #ui { position: fixed; top: 10px; left: 10px; color: white; font-family: sans-serif; text-shadow: 2px 2px #000; z-index: 20; }
     </style>
 </head>
 <body>
-    <div id="lava"></div>
+    <div id="ui">Use W, A, D to move. Watch out for the saws!</div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <script>
-const nick = prompt("Enter your Nickname:") || "Runner";
+const nick = prompt("Enter Nickname:") || "Stickman";
 const socket = io();
 const { Engine, Render, Runner, Bodies, Composite, Body, Events } = Matter;
 
@@ -23,21 +23,34 @@ const render = Render.create({
     options: { width: window.innerWidth, height: window.innerHeight, wireframes: false, background: 'transparent' }
 });
 
-// Physics Player
-const player = Bodies.rectangle(100, 100, 30, 60, { friction: 0.01, render: { visible: false } });
-Composite.add(engine.world, player);
+// 1. Create Player
+const player = Bodies.rectangle(100, 100, 30, 60, { friction: 0.1, label: 'player', render: { visible: false } });
+const startPlatform = Bodies.rectangle(100, 300, 400, 40, { isStatic: true, render: { fillStyle: '#8b4513' } });
+Composite.add(engine.world, [player, startPlatform]);
 
 let others = {};
-let platforms = [];
+let hazards = []; // Spikes and Saws
 
 socket.emit('join', nick);
 
 socket.on('init', data => {
+    // Build Platforms
     data.platforms.forEach(p => {
-        Composite.add(engine.world, Bodies.rectangle(p.x, p.y, p.w, 20, { isStatic: true, render: { fillStyle: '#073642' } }));
-    });
-    Object.keys(data.players).forEach(id => {
-        if(id !== socket.id) others[id] = data.players[id];
+        const plat = Bodies.rectangle(p.x, p.y, p.w, 30, { isStatic: true, render: { fillStyle: '#4d2600' } });
+        Composite.add(engine.world, plat);
+
+        // Randomly add a Spike or a Saw to some platforms
+        if (Math.random() > 0.6) {
+            const type = Math.random() > 0.5 ? 'saw' : 'spike';
+            const hazard = Bodies.circle(p.x, p.y - 40, type === 'saw' ? 25 : 15, { 
+                isStatic: true, 
+                isSensor: true, // Detection only
+                label: 'hazard'
+            });
+            hazard.hazardType = type;
+            hazards.push(hazard);
+            Composite.add(engine.world, hazard);
+        }
     });
 });
 
@@ -50,44 +63,81 @@ window.onkeydown = e => keys[e.key.toLowerCase()] = true;
 window.onkeyup = e => keys[e.key.toLowerCase()] = false;
 
 let animCounter = 0;
+let sawRotation = 0;
+
 Events.on(engine, 'beforeUpdate', () => {
-    if (keys['d']) Body.translate(player, { x: 5, y: 0 });
-    if (keys['a']) Body.translate(player, { x: -5, y: 0 });
-    if (keys['w'] && Math.abs(player.velocity.y) < 0.1) Body.setVelocity(player, { x: player.velocity.x, y: -12 });
+    // Movement Logic
+    if (keys['d']) Body.setVelocity(player, { x: 5, y: player.velocity.y });
+    if (keys['a']) Body.setVelocity(player, { x: -5, y: player.velocity.y });
+    if (keys['w'] && Math.abs(player.velocity.y) < 0.5) Body.setVelocity(player, { x: player.velocity.x, y: -12 });
     
-    if (player.position.y > 1500) Body.setPosition(player, { x: 100, y: 100 });
+    // Death Logic (Lava or Falling)
+    if (player.position.y > 1200) respawn();
+
+    // Check for Hazard Collision
+    hazards.forEach(h => {
+        const dist = Math.hypot(player.position.x - h.position.x, player.position.y - h.position.y);
+        if (dist < 40) respawn();
+    });
+
+    if (Math.abs(player.velocity.x) > 0.1) animCounter += 0.2;
+    sawRotation += 0.1;
     
-    animCounter += 0.1;
     socket.emit('move', { id: socket.id, x: player.position.x, y: player.position.y, anim: animCounter });
+
+    // SCREEN FOLLOW: Center the camera on the player
+    Render.lookAt(render, {
+        min: { x: player.position.x - window.innerWidth/2, y: player.position.y - window.innerHeight/1.5 },
+        max: { x: player.position.x + window.innerWidth/2, y: player.position.y + window.innerHeight/3 }
+    });
 });
 
-// CUSTOM DRAWING (Stickmen + Names)
+function respawn() {
+    Body.setPosition(player, { x: 100, y: 100 });
+    Body.setVelocity(player, { x: 0, y: 0 });
+}
+
+// CUSTOM DRAWING (Stickmen + Hazards)
 Events.on(render, 'afterRender', () => {
     const ctx = render.context;
     const cx = render.bounds.min.x;
     const cy = render.bounds.min.y;
 
+    // Draw Saws & Spikes
+    hazards.forEach(h => {
+        ctx.save();
+        ctx.translate(h.position.x - cx, h.position.y - cy);
+        if (h.hazardType === 'saw') {
+            ctx.rotate(sawRotation);
+            ctx.fillStyle = "#333";
+            for(let i=0; i<8; i++) {
+                ctx.rotate(Math.PI/4);
+                ctx.fillRect(-5, -30, 10, 20);
+            }
+            ctx.beginPath(); ctx.arc(0,0,15,0,Math.PI*2); ctx.fill();
+        } else {
+            ctx.fillStyle = "#222";
+            ctx.beginPath(); ctx.moveTo(-15, 15); ctx.lineTo(0, -15); ctx.lineTo(15, 15); ctx.fill();
+        }
+        ctx.restore();
+    });
+
     const drawStick = (x, y, name, anim, color) => {
-        ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 3;
+        ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 4;
         ctx.beginPath();
-        // Head
-        ctx.arc(x - cx, y - cy - 25, 8, 0, Math.PI * 2);
-        // Body
-        ctx.moveTo(x - cx, y - cy - 17); ctx.lineTo(x - cx, y - cy + 5);
-        // Arms
-        ctx.moveTo(x - cx, y - cy - 10); ctx.lineTo(x - cx + Math.sin(anim)*15, y - cy);
+        ctx.arc(x - cx, y - cy - 25, 8, 0, Math.PI * 2); // Head
+        ctx.moveTo(x - cx, y - cy - 17); ctx.lineTo(x - cx, y - cy + 5); // Body
+        ctx.moveTo(x - cx, y - cy - 10); ctx.lineTo(x - cx + Math.sin(anim)*15, y - cy); // Arms
         ctx.moveTo(x - cx, y - cy - 10); ctx.lineTo(x - cx - Math.sin(anim)*15, y - cy);
-        // Legs
-        ctx.moveTo(x - cx, y - cy + 5); ctx.lineTo(x - cx + Math.cos(anim)*15, y - cy + 25);
+        ctx.moveTo(x - cx, y - cy + 5); ctx.lineTo(x - cx + Math.cos(anim)*15, y - cy + 25); // Legs
         ctx.moveTo(x - cx, y - cy + 5); ctx.lineTo(x - cx - Math.cos(anim)*15, y - cy + 25);
         ctx.stroke();
-        // Name
-        ctx.font = "14px Arial"; ctx.textAlign = "center";
-        ctx.fillText(name, x - cx, y - cy - 45);
+        ctx.fillStyle = "white"; ctx.font = "bold 16px Arial"; ctx.textAlign = "center";
+        ctx.fillText(name, x - cx, y - cy - 50);
     };
 
-    drawStick(player.position.x, player.position.y, nick, animCounter, "#ff8c00");
-    Object.values(others).forEach(p => drawStick(p.x, p.y, p.name, p.anim, "#859900"));
+    drawStick(player.position.x, player.position.y, nick, animCounter, "white");
+    Object.values(others).forEach(p => drawStick(p.x, p.y, p.name, p.anim || 0, "#00ffcc"));
 });
 
 Render.run(render);
