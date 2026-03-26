@@ -1,18 +1,19 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Orange Stickman Parkour</title>
+    <title>Orange Ball Parkour</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #ff8c00; } /* Orange Background */
+        body { margin: 0; overflow: hidden; background: #ff8c00; }
         #ui { position: fixed; top: 10px; left: 10px; color: white; font-family: sans-serif; text-shadow: 2px 2px #000; z-index: 20; }
     </style>
 </head>
 <body>
-    <div id="ui">Use W, A, D to move. Watch out for the saws!</div>
+    <div id="ui">Use A/D to Roll, W to Jump. <br> Avoid the Orange Traps!</div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <script>
-const nick = prompt("Enter Nickname:") || "Stickman";
+const nick = prompt("Enter Nickname:") || "Baller";
+const myColor = `hsl(${Math.random() * 360}, 80%, 60%)`; // Random Ball Color
 const socket = io();
 const { Engine, Render, Runner, Bodies, Composite, Body, Events } = Matter;
 
@@ -23,31 +24,38 @@ const render = Render.create({
     options: { width: window.innerWidth, height: window.innerHeight, wireframes: false, background: 'transparent' }
 });
 
-// 1. Create Player
-const player = Bodies.rectangle(100, 100, 30, 60, { friction: 0.1, label: 'player', render: { visible: false } });
-const startPlatform = Bodies.rectangle(100, 300, 400, 40, { isStatic: true, render: { fillStyle: '#8b4513' } });
+// 1. Create Player Ball (More friction + airFriction makes it less sensitive)
+const player = Bodies.circle(100, 100, 20, { 
+    friction: 0.5, 
+    frictionAir: 0.02, 
+    restitution: 0.3,
+    render: { fillStyle: myColor } 
+});
+const startPlatform = Bodies.rectangle(100, 300, 400, 40, { isStatic: true, render: { fillStyle: '#4d2600' } });
 Composite.add(engine.world, [player, startPlatform]);
 
 let others = {};
-let hazards = []; // Spikes and Saws
+let hazards = []; 
 
-socket.emit('join', nick);
+socket.emit('join', { name: nick, color: myColor });
 
 socket.on('init', data => {
-    // Build Platforms
     data.platforms.forEach(p => {
         const plat = Bodies.rectangle(p.x, p.y, p.w, 30, { isStatic: true, render: { fillStyle: '#4d2600' } });
         Composite.add(engine.world, plat);
 
-        // Randomly add a Spike or a Saw to some platforms
-        if (Math.random() > 0.6) {
-            const type = Math.random() > 0.5 ? 'saw' : 'spike';
-            const hazard = Bodies.circle(p.x, p.y - 40, type === 'saw' ? 25 : 15, { 
-                isStatic: true, 
-                isSensor: true, // Detection only
-                label: 'hazard'
-            });
-            hazard.hazardType = type;
+        if (Math.random() > 0.5) {
+            const isSaw = Math.random() > 0.5;
+            let hazard;
+            
+            if (isSaw) {
+                hazard = Bodies.circle(p.x, p.y - 40, 25, { isStatic: true, isSensor: true });
+                hazard.type = 'saw';
+            } else {
+                // Trapezoid makes a perfect triangle spike with no circle!
+                hazard = Bodies.trapezoid(p.x, p.y - 30, 40, 40, 1, { isStatic: true, isSensor: true });
+                hazard.type = 'spike';
+            }
             hazards.push(hazard);
             Composite.add(engine.world, hazard);
         }
@@ -62,30 +70,24 @@ const keys = {};
 window.onkeydown = e => keys[e.key.toLowerCase()] = true;
 window.onkeyup = e => keys[e.key.toLowerCase()] = false;
 
-let animCounter = 0;
 let sawRotation = 0;
 
 Events.on(engine, 'beforeUpdate', () => {
-    // Movement Logic
-    if (keys['d']) Body.setVelocity(player, { x: 5, y: player.velocity.y });
-    if (keys['a']) Body.setVelocity(player, { x: -5, y: player.velocity.y });
-    if (keys['w'] && Math.abs(player.velocity.y) < 0.5) Body.setVelocity(player, { x: player.velocity.x, y: -12 });
+    // Movement (Lower force = less sensitive)
+    if (keys['d']) Body.applyForce(player, player.position, { x: 0.002, y: 0 });
+    if (keys['a']) Body.applyForce(player, player.position, { x: -0.002, y: 0 });
+    if (keys['w'] && Math.abs(player.velocity.y) < 0.5) Body.setVelocity(player, { x: player.velocity.x, y: -9 });
     
-    // Death Logic (Lava or Falling)
     if (player.position.y > 1200) respawn();
 
-    // Check for Hazard Collision
     hazards.forEach(h => {
         const dist = Math.hypot(player.position.x - h.position.x, player.position.y - h.position.y);
-        if (dist < 40) respawn();
+        if (dist < 35) respawn();
     });
 
-    if (Math.abs(player.velocity.x) > 0.1) animCounter += 0.2;
     sawRotation += 0.1;
-    
-    socket.emit('move', { id: socket.id, x: player.position.x, y: player.position.y, anim: animCounter });
+    socket.emit('move', { id: socket.id, x: player.position.x, y: player.position.y, color: myColor });
 
-    // SCREEN FOLLOW: Center the camera on the player
     Render.lookAt(render, {
         min: { x: player.position.x - window.innerWidth/2, y: player.position.y - window.innerHeight/1.5 },
         max: { x: player.position.x + window.innerWidth/2, y: player.position.y + window.innerHeight/3 }
@@ -97,47 +99,46 @@ function respawn() {
     Body.setVelocity(player, { x: 0, y: 0 });
 }
 
-// CUSTOM DRAWING (Stickmen + Hazards)
 Events.on(render, 'afterRender', () => {
     const ctx = render.context;
     const cx = render.bounds.min.x;
     const cy = render.bounds.min.y;
 
-    // Draw Saws & Spikes
+    // Draw Hazards in Orange/Dark Orange
     hazards.forEach(h => {
         ctx.save();
         ctx.translate(h.position.x - cx, h.position.y - cy);
-        if (h.hazardType === 'saw') {
+        ctx.fillStyle = "#e65100"; // Deep Orange
+        ctx.strokeStyle = "#331a00";
+        ctx.lineWidth = 2;
+
+        if (h.type === 'saw') {
             ctx.rotate(sawRotation);
-            ctx.fillStyle = "#333";
             for(let i=0; i<8; i++) {
                 ctx.rotate(Math.PI/4);
-                ctx.fillRect(-5, -30, 10, 20);
+                ctx.beginPath();
+                ctx.moveTo(0, -30); ctx.lineTo(10, -15); ctx.lineTo(-10, -15); ctx.fill();
             }
-            ctx.beginPath(); ctx.arc(0,0,15,0,Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(0,0,15,0,Math.PI*2); ctx.fill(); ctx.stroke();
         } else {
-            ctx.fillStyle = "#222";
-            ctx.beginPath(); ctx.moveTo(-15, 15); ctx.lineTo(0, -15); ctx.lineTo(15, 15); ctx.fill();
+            // Triangle Spike
+            ctx.beginPath(); ctx.moveTo(-20, 15); ctx.lineTo(0, -25); ctx.lineTo(20, 15); ctx.closePath();
+            ctx.fill(); ctx.stroke();
         }
         ctx.restore();
     });
 
-    const drawStick = (x, y, name, anim, color) => {
-        ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.arc(x - cx, y - cy - 25, 8, 0, Math.PI * 2); // Head
-        ctx.moveTo(x - cx, y - cy - 17); ctx.lineTo(x - cx, y - cy + 5); // Body
-        ctx.moveTo(x - cx, y - cy - 10); ctx.lineTo(x - cx + Math.sin(anim)*15, y - cy); // Arms
-        ctx.moveTo(x - cx, y - cy - 10); ctx.lineTo(x - cx - Math.sin(anim)*15, y - cy);
-        ctx.moveTo(x - cx, y - cy + 5); ctx.lineTo(x - cx + Math.cos(anim)*15, y - cy + 25); // Legs
-        ctx.moveTo(x - cx, y - cy + 5); ctx.lineTo(x - cx - Math.cos(anim)*15, y - cy + 25);
-        ctx.stroke();
-        ctx.fillStyle = "white"; ctx.font = "bold 16px Arial"; ctx.textAlign = "center";
-        ctx.fillText(name, x - cx, y - cy - 50);
-    };
+    // Draw Other Players
+    Object.values(others).forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(p.x - cx, p.y - cy, 20, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = "white"; ctx.font = "bold 14px Arial"; ctx.textAlign = "center";
+        ctx.fillText(p.name, p.x - cx, p.y - cy - 30);
+    });
 
-    drawStick(player.position.x, player.position.y, nick, animCounter, "white");
-    Object.values(others).forEach(p => drawStick(p.x, p.y, p.name, p.anim || 0, "#00ffcc"));
+    // Draw Your Nickname
+    ctx.fillStyle = "white"; ctx.font = "bold 16px Arial"; ctx.textAlign = "center";
+    ctx.fillText(nick, player.position.x - cx, player.position.y - cy - 35);
 });
 
 Render.run(render);
