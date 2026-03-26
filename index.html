@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Stickman Parkour</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #002b36; }
+        #lava { position: fixed; bottom: 0; width: 100%; height: 30px; background: linear-gradient(transparent, red); }
+    </style>
+</head>
+<body>
+    <div id="lava"></div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script>
+const nick = prompt("Enter your Nickname:") || "Runner";
+const socket = io();
+const { Engine, Render, Runner, Bodies, Composite, Body, Events } = Matter;
+
+const engine = Engine.create();
+const render = Render.create({ 
+    element: document.body, 
+    engine: engine, 
+    options: { width: window.innerWidth, height: window.innerHeight, wireframes: false, background: 'transparent' }
+});
+
+// Physics Player
+const player = Bodies.rectangle(100, 100, 30, 60, { friction: 0.01, render: { visible: false } });
+Composite.add(engine.world, player);
+
+let others = {};
+let platforms = [];
+
+socket.emit('join', nick);
+
+socket.on('init', data => {
+    data.platforms.forEach(p => {
+        Composite.add(engine.world, Bodies.rectangle(p.x, p.y, p.w, 20, { isStatic: true, render: { fillStyle: '#073642' } }));
+    });
+    Object.keys(data.players).forEach(id => {
+        if(id !== socket.id) others[id] = data.players[id];
+    });
+});
+
+socket.on('updatePlayer', data => { if(others[data.id]) others[data.id] = {...others[data.id], ...data}; });
+socket.on('newPlayer', data => { others[data.id] = data.data; });
+socket.on('removePlayer', id => { delete others[id]; });
+
+const keys = {};
+window.onkeydown = e => keys[e.key.toLowerCase()] = true;
+window.onkeyup = e => keys[e.key.toLowerCase()] = false;
+
+let animCounter = 0;
+Events.on(engine, 'beforeUpdate', () => {
+    if (keys['d']) Body.translate(player, { x: 5, y: 0 });
+    if (keys['a']) Body.translate(player, { x: -5, y: 0 });
+    if (keys['w'] && Math.abs(player.velocity.y) < 0.1) Body.setVelocity(player, { x: player.velocity.x, y: -12 });
+    
+    if (player.position.y > 1500) Body.setPosition(player, { x: 100, y: 100 });
+    
+    animCounter += 0.1;
+    socket.emit('move', { id: socket.id, x: player.position.x, y: player.position.y, anim: animCounter });
+});
+
+// CUSTOM DRAWING (Stickmen + Names)
+Events.on(render, 'afterRender', () => {
+    const ctx = render.context;
+    const cx = render.bounds.min.x;
+    const cy = render.bounds.min.y;
+
+    const drawStick = (x, y, name, anim, color) => {
+        ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 3;
+        ctx.beginPath();
+        // Head
+        ctx.arc(x - cx, y - cy - 25, 8, 0, Math.PI * 2);
+        // Body
+        ctx.moveTo(x - cx, y - cy - 17); ctx.lineTo(x - cx, y - cy + 5);
+        // Arms
+        ctx.moveTo(x - cx, y - cy - 10); ctx.lineTo(x - cx + Math.sin(anim)*15, y - cy);
+        ctx.moveTo(x - cx, y - cy - 10); ctx.lineTo(x - cx - Math.sin(anim)*15, y - cy);
+        // Legs
+        ctx.moveTo(x - cx, y - cy + 5); ctx.lineTo(x - cx + Math.cos(anim)*15, y - cy + 25);
+        ctx.moveTo(x - cx, y - cy + 5); ctx.lineTo(x - cx - Math.cos(anim)*15, y - cy + 25);
+        ctx.stroke();
+        // Name
+        ctx.font = "14px Arial"; ctx.textAlign = "center";
+        ctx.fillText(name, x - cx, y - cy - 45);
+    };
+
+    drawStick(player.position.x, player.position.y, nick, animCounter, "#ff8c00");
+    Object.values(others).forEach(p => drawStick(p.x, p.y, p.name, p.anim, "#859900"));
+});
+
+Render.run(render);
+Runner.run(Runner.create(), engine);
+</script>
+</body>
+</html>
