@@ -8,33 +8,68 @@ const io = new Server(server, { cors: { origin: "*" } });
 app.use(express.static(__dirname));
 
 let players = {};
-let platforms = [];
-
-// Create 50 platforms for a long run
-for (let i = 0; i < 50; i++) {
-    platforms.push({ x: i * 350, y: 400 + Math.random() * 200, w: 180 });
-}
 
 io.on('connection', (socket) => {
-    socket.on('join', (nickname) => {
-        players[socket.id] = { x: 100, y: 100, name: nickname || "Guest", anim: 0 };
-        socket.emit('init', { players, platforms });
-        socket.broadcast.emit('newPlayer', { id: socket.id, data: players[socket.id] });
+    console.log(`User connected: ${socket.id}`);
+
+    // 1. When a player joins
+    socket.on('join', (data) => {
+        players[socket.id] = {
+            id: socket.id,
+            x: 400,
+            y: 300,
+            hp: 100,
+            name: data.name || "Guest",
+            color: data.color || "#ff8c00"
+        };
+        // Send existing players to the newcomer
+        socket.emit('init', players);
+        // Tell everyone else a new player arrived
+        socket.broadcast.emit('newPlayer', players[socket.id]);
     });
 
+    // 2. Handle Movement
     socket.on('move', (data) => {
         if (players[socket.id]) {
             players[socket.id].x = data.x;
             players[socket.id].y = data.y;
-            players[socket.id].anim = data.anim;
-            socket.broadcast.emit('updatePlayer', { id: socket.id, ...data });
+            // Broadcast the update to everyone else
+            socket.broadcast.emit('updatePlayer', players[socket.id]);
+        }
+    });
+
+    // 3. Handle Shooting (The Weapon Logic)
+    socket.on('shoot', (data) => {
+        // We broadcast the shot to everyone else so they see the bullet
+        // data contains: { x, y, dir }
+        socket.broadcast.emit('opponentShot', {
+            id: socket.id,
+            x: data.x,
+            y: data.y,
+            dir: data.dir
+        });
+    });
+
+    // 4. Handle Hits (When a player says "I hit someone")
+    socket.on('hitPlayer', (targetId) => {
+        if (players[targetId]) {
+            players[targetId].hp -= 10;
+            
+            if (players[targetId].hp <= 0) {
+                players[targetId].hp = 100; // Reset HP
+                io.emit('playerKilled', { victim: targetId, killer: socket.id });
+            } else {
+                io.emit('updateHP', { id: targetId, hp: players[targetId].hp });
+            }
         }
     });
 
     socket.on('disconnect', () => {
         delete players[socket.id];
         io.emit('removePlayer', socket.id);
+        console.log(`User disconnected: ${socket.id}`);
     });
 });
 
-server.listen(process.env.PORT || 3000);
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Arena Server running on port ${PORT}`));
