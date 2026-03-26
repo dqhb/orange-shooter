@@ -9,67 +9,49 @@ app.use(express.static(__dirname));
 
 let players = {};
 
-io.on('connection', (socket) => {
-    console.log(`User connected: ${socket.id}`);
+// THE MAP (Make sure this matches your client)
+const mapWalls = [
+    { x: 400, y: 5, w: 800, h: 10 }, { x: 400, y: 595, w: 800, h: 10 },
+    { x: 5, y: 300, w: 10, h: 600 }, { x: 795, y: 300, w: 10, h: 600 },
+    { x: 400, y: 150, w: 10, h: 300 }, { x: 400, y: 450, w: 10, h: 300 },
+    { x: 150, y: 300, w: 300, h: 10 }, { x: 650, y: 300, w: 300, h: 10 }
+];
 
-    // 1. When a player joins
+io.on('connection', (socket) => {
     socket.on('join', (data) => {
-        players[socket.id] = {
-            id: socket.id,
-            x: 400,
-            y: 300,
-            hp: 100,
-            name: data.name || "Guest",
-            color: data.color || "#ff8c00"
+        // Create player record
+        players[socket.id] = { 
+            id: socket.id, 
+            x: 100, y: 100, 
+            hp: 100, 
+            name: data.name || "Guest", 
+            color: data.color || "#ff8c00" 
         };
-        // Send existing players to the newcomer
-        socket.emit('init', players);
-        // Tell everyone else a new player arrived
+        
+        // 1. Send the map and ALL current players to the person who just joined
+        socket.emit('init', { players, mapWalls });
+
+        // 2. Tell everyone else that a new player joined
         socket.broadcast.emit('newPlayer', players[socket.id]);
     });
 
-    // 2. Handle Movement
     socket.on('move', (data) => {
         if (players[socket.id]) {
             players[socket.id].x = data.x;
             players[socket.id].y = data.y;
-            // Broadcast the update to everyone else
+            // Send movement to everyone EXCEPT the sender
             socket.broadcast.emit('updatePlayer', players[socket.id]);
         }
     });
 
-    // 3. Handle Shooting (The Weapon Logic)
     socket.on('shoot', (data) => {
-        // We broadcast the shot to everyone else so they see the bullet
-        // data contains: { x, y, dir }
-        socket.broadcast.emit('opponentShot', {
-            id: socket.id,
-            x: data.x,
-            y: data.y,
-            dir: data.dir
-        });
-    });
-
-    // 4. Handle Hits (When a player says "I hit someone")
-    socket.on('hitPlayer', (targetId) => {
-        if (players[targetId]) {
-            players[targetId].hp -= 10;
-            
-            if (players[targetId].hp <= 0) {
-                players[targetId].hp = 100; // Reset HP
-                io.emit('playerKilled', { victim: targetId, killer: socket.id });
-            } else {
-                io.emit('updateHP', { id: targetId, hp: players[targetId].hp });
-            }
-        }
+        socket.broadcast.emit('opponentShot', { id: socket.id, ...data });
     });
 
     socket.on('disconnect', () => {
         delete players[socket.id];
         io.emit('removePlayer', socket.id);
-        console.log(`User disconnected: ${socket.id}`);
     });
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Arena Server running on port ${PORT}`));
+server.listen(process.env.PORT || 3000);
