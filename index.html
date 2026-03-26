@@ -4,19 +4,16 @@
     <title>Orange Arena</title>
     <style>
         body { margin: 0; background: #0a0a0a; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
-        #ui { position: fixed; top: 10px; left: 10px; color: #ff8c00; font-family: monospace; z-index: 10; }
+        canvas { border: 4px solid #333; }
     </style>
 </head>
 <body>
-    <div id="ui"><b>ARENA</b> | HP: <span id="hp">100</span></div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <script>
-const nick = prompt("Name:") || "Baller";
-const myColor = `hsl(${Math.random() * 360}, 80%, 60%)`;
 const socket = io();
-
 const { Engine, Render, Runner, Bodies, Composite, Body, Events } = Matter;
+
 const engine = Engine.create();
 engine.gravity.y = 0;
 
@@ -26,59 +23,84 @@ const render = Render.create({
     options: { width: 800, height: 600, wireframes: false, background: '#0a0a0a' }
 });
 
-// Player Logic
-const player = Bodies.circle(100, 100, 20, { frictionAir: 0.1, render: { fillStyle: myColor } });
+// Collision categories: Player = 1, Wall = 2, Bullet = 4
+const PLAYER_CAT = 0x0001, WALL_CAT = 0x0002, BULLET_CAT = 0x0004;
+
+const player = Bodies.circle(100, 100, 20, { 
+    collisionFilter: { category: PLAYER_CAT },
+    frictionAir: 0.1, 
+    render: { fillStyle: 'orange' } 
+});
 Composite.add(engine.world, player);
 
-let others = {}; // This stores all other players
+let others = {};
+let lastDir = { x: 1, y: 0 };
 const keys = {};
 
-// SOCKET EVENTS
 socket.on('init', data => {
-    others = data.players;
-    delete others[socket.id]; // Don't track yourself in the 'others' list
-    
     data.mapWalls.forEach(w => {
-        Composite.add(engine.world, Bodies.rectangle(w.x, w.y, w.w, w.h, { isStatic: true, render: { fillStyle: '#333' } }));
+        const wall = Bodies.rectangle(w.x, w.y, w.w, w.h, { 
+            isStatic: true, 
+            collisionFilter: { category: WALL_CAT },
+            render: { fillStyle: '#444' } 
+        });
+        Composite.add(engine.world, wall);
     });
 });
 
-socket.on('newPlayer', p => { others[p.id] = p; });
 socket.on('updatePlayer', p => { others[p.id] = p; });
-socket.on('removePlayer', id => { delete others[id]; });
+socket.on('opponentShot', d => spawnBullet(d.x, d.y, d.dir, false));
 
-// Movement Input
-window.onkeydown = e => keys[e.code] = true;
+function spawnBullet(x, y, dir, isMe) {
+    const bullet = Bodies.circle(x + dir.x * 25, y + dir.y * 25, 5, {
+        restitution: 1, friction: 0, frictionAir: 0,
+        collisionFilter: { category: BULLET_CAT, mask: WALL_CAT | PLAYER_CAT },
+        render: { fillStyle: isMe ? '#ff8c00' : 'red' }
+    });
+    bullet.bounces = 0;
+    Body.setVelocity(bullet, { x: dir.x * 10, y: dir.y * 10 });
+    Composite.add(engine.world, bullet);
+
+    // Bounce Logic
+    Events.on(engine, 'collisionStart', (event) => {
+        event.pairs.forEach(pair => {
+            if (pair.bodyA === bullet || pair.bodyB === bullet) {
+                bullet.bounces++;
+                if (bullet.bounces > 3) Composite.remove(engine.world, bullet);
+            }
+        });
+    });
+}
+
+window.onkeydown = e => {
+    keys[e.code] = true;
+    if (e.code === 'Space') {
+        spawnBullet(player.position.x, player.position.y, lastDir, true);
+        socket.emit('shoot', { x: player.position.x, y: player.position.y, dir: lastDir });
+    }
+};
 window.onkeyup = e => keys[e.code] = false;
 
 Events.on(engine, 'beforeUpdate', () => {
     let vx = 0, vy = 0;
     if (keys['KeyW']) vy = -5; if (keys['KeyS']) vy = 5;
     if (keys['KeyA']) vx = -5; if (keys['KeyD']) vx = 5;
-    Body.setVelocity(player, { x: vx, y: vy });
-
+    
+    if (vx !== 0 || vy !== 0) {
+        lastDir = { x: vx / 5, y: vy / 5 };
+        Body.setVelocity(player, { x: vx, y: vy });
+    }
     socket.emit('move', { x: player.position.x, y: player.position.y });
 });
 
-// DRAWING OTHER PLAYERS
 Events.on(render, 'afterRender', () => {
     const ctx = render.context;
     Object.values(others).forEach(p => {
-        // Draw Body
-        ctx.fillStyle = p.color;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 20, 0, Math.PI * 2);
-        ctx.fill();
-        
-        // Draw Name
-        ctx.fillStyle = "white";
-        ctx.font = "12px Arial";
-        ctx.textAlign = "center";
-        ctx.fillText(p.name, p.x, p.y - 30);
+        ctx.fillStyle = p.color || 'red';
+        ctx.beginPath(); ctx.arc(p.x, p.y, 20, 0, Math.PI*2); ctx.fill();
     });
 });
 
-socket.emit('join', { name: nick, color: myColor });
 Render.run(render);
 Runner.run(Runner.create(), engine);
 </script>
