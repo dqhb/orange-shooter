@@ -1,144 +1,115 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Orange Parkour</title>
+    <title>Orange Arena</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #ff8c00; }
-        #ui { position: fixed; top: 10px; left: 10px; color: white; font-family: sans-serif; text-shadow: 2px 2px #000; z-index: 20; }
+        body { margin: 0; overflow: hidden; background: #1a1a1a; }
+        #ui { 
+            position: fixed; top: 10px; left: 10px; 
+            color: #ff8c00; font-family: 'Courier New', Courier, monospace; 
+            text-shadow: 2px 2px black; pointer-events: none; 
+        }
     </style>
 </head>
 <body>
-    <div id="ui">Use A/D to Roll, W to Jump. <br> Avoid the Orange Traps!</div>
+    <div id="ui">
+        <b>ORANGE ARENA v1.0</b><br>
+        WASD: Move | SPACE: Shoot<br>
+        HP: <span id="hp-val">100</span>
+    </div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <script>
-const nick = prompt("Enter Nickname:") || "Baller";
-const myColor = `hsl(${Math.random() * 360}, 80%, 60%)`; // Random Ball Color
+const nick = prompt("Enter Nickname:") || "Player";
+const myColor = `hsl(${Math.random() * 360}, 80%, 60%)`;
 const socket = io();
+
 const { Engine, Render, Runner, Bodies, Composite, Body, Events } = Matter;
-
 const engine = Engine.create();
-const render = Render.create({ 
-    element: document.body, 
-    engine: engine, 
-    options: { width: window.innerWidth, height: window.innerHeight, wireframes: false, background: 'transparent' }
+engine.gravity.y = 0; // Top-down mode
+
+const render = Render.create({
+    element: document.body,
+    engine: engine,
+    options: { width: window.innerWidth, height: window.innerHeight, wireframes: false, background: '#1a1a1a' }
 });
 
-// 1. Create Player Ball (More friction + airFriction makes it less sensitive)
-const player = Bodies.circle(100, 100, 20, { 
-    friction: 0.5, 
-    frictionAir: 0.02, 
-    restitution: 0.3,
-    render: { fillStyle: myColor } 
+// 1. The Player
+let hp = 100;
+const player = Bodies.circle(400, 300, 20, { 
+    frictionAir: 0, 
+    restitution: 0,
+    render: { fillStyle: myColor, strokeStyle: '#ffffff', lineWidth: 4 }
 });
-const startPlatform = Bodies.rectangle(100, 300, 400, 40, { isStatic: true, render: { fillStyle: '#4d2600' } });
-Composite.add(engine.world, [player, startPlatform]);
+Composite.add(engine.world, player);
 
+let bullets = [];
 let others = {};
-let hazards = []; 
-
-socket.emit('join', { name: nick, color: myColor });
-
-socket.on('init', data => {
-    data.platforms.forEach(p => {
-        const plat = Bodies.rectangle(p.x, p.y, p.w, 30, { isStatic: true, render: { fillStyle: '#4d2600' } });
-        Composite.add(engine.world, plat);
-
-        if (Math.random() > 0.5) {
-            const isSaw = Math.random() > 0.5;
-            let hazard;
-            
-            if (isSaw) {
-                hazard = Bodies.circle(p.x, p.y - 40, 25, { isStatic: true, isSensor: true });
-                hazard.type = 'saw';
-            } else {
-                // Trapezoid makes a perfect triangle spike with no circle!
-                hazard = Bodies.trapezoid(p.x, p.y - 30, 40, 40, 1, { isStatic: true, isSensor: true });
-                hazard.type = 'spike';
-            }
-            hazards.push(hazard);
-            Composite.add(engine.world, hazard);
-        }
-    });
-});
-
-socket.on('updatePlayer', data => { if(others[data.id]) others[data.id] = {...others[data.id], ...data}; });
-socket.on('newPlayer', data => { others[data.id] = data.data; });
-socket.on('removePlayer', id => { delete others[id]; });
+let lastDir = { x: 1, y: 0 }; // Default shooting direction (Right)
 
 const keys = {};
-window.onkeydown = e => keys[e.key.toLowerCase()] = true;
-window.onkeyup = e => keys[e.key.toLowerCase()] = false;
+window.onkeydown = e => {
+    keys[e.code] = true;
+    // Shooting on Space
+    if (e.code === 'Space') shoot();
+};
+window.onkeyup = e => keys[e.code] = false;
 
-let sawRotation = 0;
-
-Events.on(engine, 'beforeUpdate', () => {
-    // Movement (Lower force = less sensitive)
-    if (keys['d']) Body.applyForce(player, player.position, { x: 0.002, y: 0 });
-    if (keys['a']) Body.applyForce(player, player.position, { x: -0.002, y: 0 });
-    if (keys['w'] && Math.abs(player.velocity.y) < 0.5) Body.setVelocity(player, { x: player.velocity.x, y: -9 });
+function shoot() {
+    const bullet = Bodies.circle(player.position.x, player.position.y, 6, {
+        frictionAir: 0,
+        label: 'bullet',
+        render: { fillStyle: '#ff8c00' }
+    });
     
-    if (player.position.y > 1200) respawn();
-
-    hazards.forEach(h => {
-        const dist = Math.hypot(player.position.x - h.position.x, player.position.y - h.position.y);
-        if (dist < 35) respawn();
-    });
-
-    sawRotation += 0.1;
-    socket.emit('move', { id: socket.id, x: player.position.x, y: player.position.y, color: myColor });
-
-    Render.lookAt(render, {
-        min: { x: player.position.x - window.innerWidth/2, y: player.position.y - window.innerHeight/1.5 },
-        max: { x: player.position.x + window.innerWidth/2, y: player.position.y + window.innerHeight/3 }
-    });
-});
-
-function respawn() {
-    Body.setPosition(player, { x: 100, y: 100 });
-    Body.setVelocity(player, { x: 0, y: 0 });
+    // Fire in the direction of movement
+    const speed = 12;
+    Body.setVelocity(bullet, { x: lastDir.x * speed, y: lastDir.y * speed });
+    
+    bullets.push(bullet);
+    Composite.add(engine.world, bullet);
+    socket.emit('shoot', { x: player.position.x, y: player.position.y, dir: lastDir });
 }
 
+Events.on(engine, 'beforeUpdate', () => {
+    let vx = 0;
+    let vy = 0;
+    const speed = 6;
+
+    if (keys['KeyW']) vy = -speed;
+    if (keys['KeyS']) vy = speed;
+    if (keys['KeyA']) vx = -speed;
+    if (keys['KeyD']) vx = speed;
+
+    // Update facing direction for shooting
+    if (vx !== 0 || vy !== 0) {
+        lastDir = { x: vx / speed, y: vy / speed };
+    }
+
+    Body.setVelocity(player, { x: vx, y: vy });
+
+    // Boundary Check
+    if (player.position.x < 0) Body.setPosition(player, {x: window.innerWidth, y: player.position.y});
+    if (player.position.x > window.innerWidth) Body.setPosition(player, {x: 0, y: player.position.y});
+
+    socket.emit('move', { x: player.position.x, y: player.position.y, color: myColor, name: nick });
+});
+
+// 2. Custom Drawing for Health and Names
 Events.on(render, 'afterRender', () => {
     const ctx = render.context;
-    const cx = render.bounds.min.x;
-    const cy = render.bounds.min.y;
-
-    // Draw Hazards in Orange/Dark Orange
-    hazards.forEach(h => {
-        ctx.save();
-        ctx.translate(h.position.x - cx, h.position.y - cy);
-        ctx.fillStyle = "#e65100"; // Deep Orange
-        ctx.strokeStyle = "#331a00";
-        ctx.lineWidth = 2;
-
-        if (h.type === 'saw') {
-            ctx.rotate(sawRotation);
-            for(let i=0; i<8; i++) {
-                ctx.rotate(Math.PI/4);
-                ctx.beginPath();
-                ctx.moveTo(0, -30); ctx.lineTo(10, -15); ctx.lineTo(-10, -15); ctx.fill();
-            }
-            ctx.beginPath(); ctx.arc(0,0,15,0,Math.PI*2); ctx.fill(); ctx.stroke();
-        } else {
-            // Triangle Spike
-            ctx.beginPath(); ctx.moveTo(-20, 15); ctx.lineTo(0, -25); ctx.lineTo(20, 15); ctx.closePath();
-            ctx.fill(); ctx.stroke();
-        }
-        ctx.restore();
-    });
-
-    // Draw Other Players
-    Object.values(others).forEach(p => {
-        ctx.fillStyle = p.color;
-        ctx.beginPath(); ctx.arc(p.x - cx, p.y - cy, 20, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = "white"; ctx.font = "bold 14px Arial"; ctx.textAlign = "center";
-        ctx.fillText(p.name, p.x - cx, p.y - cy - 30);
-    });
-
-    // Draw Your Nickname
-    ctx.fillStyle = "white"; ctx.font = "bold 16px Arial"; ctx.textAlign = "center";
-    ctx.fillText(nick, player.position.x - cx, player.position.y - cy - 35);
+    
+    // Draw My Name/HP
+    ctx.fillStyle = "white";
+    ctx.font = "bold 14px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(nick, player.position.x, player.position.y - 35);
+    
+    // HP Bar
+    ctx.fillStyle = "red";
+    ctx.fillRect(player.position.x - 20, player.position.y - 30, 40, 5);
+    ctx.fillStyle = "#00ff00";
+    ctx.fillRect(player.position.x - 20, player.position.y - 30, (hp / 100) * 40, 5);
 });
 
 Render.run(render);
