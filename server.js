@@ -9,29 +9,18 @@ app.use(express.static(__dirname));
 
 let players = {};
 
-// THE MAP (Make sure this matches your client)
+// Hardcoded Map for everyone
 const mapWalls = [
-    { x: 400, y: 5, w: 800, h: 10 }, { x: 400, y: 595, w: 800, h: 10 },
-    { x: 5, y: 300, w: 10, h: 600 }, { x: 795, y: 300, w: 10, h: 600 },
-    { x: 400, y: 150, w: 10, h: 300 }, { x: 400, y: 450, w: 10, h: 300 },
-    { x: 150, y: 300, w: 300, h: 10 }, { x: 650, y: 300, w: 300, h: 10 }
+    { x: 400, y: 10, w: 800, h: 20 }, { x: 400, y: 590, w: 800, h: 20 },
+    { x: 10, y: 300, w: 20, h: 600 }, { x: 790, y: 300, w: 20, h: 600 },
+    { x: 400, y: 300, w: 20, h: 250 }, // Center Wall
+    { x: 200, y: 300, w: 250, h: 20 }, { x: 600, y: 300, w: 250, h: 20 }
 ];
 
 io.on('connection', (socket) => {
     socket.on('join', (data) => {
-        // Create player record
-        players[socket.id] = { 
-            id: socket.id, 
-            x: 100, y: 100, 
-            hp: 100, 
-            name: data.name || "Guest", 
-            color: data.color || "#ff8c00" 
-        };
-        
-        // 1. Send the map and ALL current players to the person who just joined
+        players[socket.id] = { id: socket.id, x: 100, y: 100, hp: 100, name: data.name, color: data.color };
         socket.emit('init', { players, mapWalls });
-
-        // 2. Tell everyone else that a new player joined
         socket.broadcast.emit('newPlayer', players[socket.id]);
     });
 
@@ -39,7 +28,6 @@ io.on('connection', (socket) => {
         if (players[socket.id]) {
             players[socket.id].x = data.x;
             players[socket.id].y = data.y;
-            // Send movement to everyone EXCEPT the sender
             socket.broadcast.emit('updatePlayer', players[socket.id]);
         }
     });
